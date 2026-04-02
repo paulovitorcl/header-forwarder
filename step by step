@@ -1,0 +1,18 @@
+kubectl --context kind-cluster-a get pods -n header-forwarder
+
+kubectl --context kind-cluster-b get pods -n header-forwarder
+
+kubectl --context kind-cluster-a port-forward svc/service1 8080:80 -n header-forwarder
+
+curl http://localhost:8080/whoAreYou
+
+# Teste sem o x journey id
+curl http://localhost:8080/startTest
+
+# Teste com o x journey id
+curl -H "x-journey-id: trilha-xpto" http://localhost:8080/startTest
+
+# Pegando logs
+POD=$(kubectl --context kind-cluster-a get pod -n header-forwarder -l app=service1 -o jsonpath='{.items[0].metadata.name}')
+
+kubectl --context kind-cluster-a logs $POD -n header-forwarder -c header-forwarder -f
