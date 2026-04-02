@@ -1,0 +1,94 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: header-forwarder
+---
+# Service 1 Deployment
+# Two containers share a pod:
+#   1. service1   — the application (no header logic whatsoever)
+#   2. header-forwarder — the sidecar proxy that handles header propagation
+#
+# How HTTP_PROXY works:
+#   Go's net/http.DefaultTransport honours the HTTP_PROXY env var.
+#   Setting it to http://localhost:9090 transparently routes all outbound
+#   HTTP calls from the application through the sidecar's forward proxy,
+#   which injects x-journey-id without any application involvement.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service1
+  namespace: header-forwarder
+  labels:
+    app: service1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service1
+  template:
+    metadata:
+      labels:
+        app: service1
+    spec:
+      containers:
+        # ── Application container ────────────────────────────────────────────
+        - name: service1
+          image: service1:latest
+          imagePullPolicy: Never   # loaded via: kind load docker-image
+          ports:
+            - containerPort: 8080
+          env:
+            # Route all outbound HTTP calls through the sidecar forward-proxy.
+            # This is the ONLY configuration change needed — no code changes.
+            - name: HTTP_PROXY
+              value: "http://localhost:9090"
+            - name: SERVICE2_URL
+              value: "http://service2.header-forwarder.svc.cluster.local"
+            - name: SERVICE3_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: service1-config
+                  key: SERVICE3_URL
+
+        # ── Header-Forwarder sidecar ─────────────────────────────────────────
+        # This is the INFRASTRUCTURE component — it is NOT application code.
+        # It captures x-journey-id from inbound requests (port 80) and injects
+        # it into every outbound request (forward proxy on port 9090).
+        - name: header-forwarder
+          image: header-forwarder:latest
+          imagePullPolicy: Never
+          ports:
+            - name: inbound
+              containerPort: 80
+            - name: outbound-proxy
+              containerPort: 9090
+          env:
+            - name: APP_ADDR
+              value: "127.0.0.1:8080"
+---
+# ConfigMap for dynamic values set by deploy.sh
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service1-config
+  namespace: header-forwarder
+data:
+  # Populated by scripts/deploy.sh after Service 3 NodePort is known
+  SERVICE3_URL: "http://placeholder:9999"
+---
+# Kubernetes Service — exposes port 80 (the sidecar inbound proxy)
+# so all inbound traffic to Service 1 passes through the header-forwarder.
+apiVersion: v1
+kind: Service
+metadata:
+  name: service1
+  namespace: header-forwarder
+spec:
+  selector:
+    app: service1
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: NodePort
